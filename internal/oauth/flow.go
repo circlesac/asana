@@ -11,11 +11,13 @@ import (
 )
 
 const (
-	DefaultPort    = 8989
-	RedirectURL    = "http://localhost:8989/callback"
-	AuthURL        = "https://app.asana.com/-/oauth_authorize"
-	TokenURL       = "https://app.asana.com/-/oauth_token"
-	TimeoutSeconds = 120
+	DefaultClientID     = "1213647506553772"
+	DefaultClientSecret = "c146f49f40622942567eddd17b0ddb91"
+	DefaultPort         = 8989
+	RedirectURL         = "http://localhost:8989/callback"
+	AuthURL             = "https://app.asana.com/-/oauth_authorize"
+	TokenURL            = "https://app.asana.com/-/oauth_token"
+	TimeoutSeconds      = 120
 )
 
 type FlowResult struct {
@@ -29,7 +31,11 @@ func RunOAuthFlow(clientID string) (*FlowResult, error) {
 		clientID = os.Getenv("ASANA_CLIENT_ID")
 	}
 	if clientID == "" {
-		return nil, fmt.Errorf("client ID required: set ASANA_CLIENT_ID env var or pass --client-id")
+		clientID = DefaultClientID
+	}
+	clientSecret := os.Getenv("ASANA_CLIENT_SECRET")
+	if clientSecret == "" {
+		clientSecret = DefaultClientSecret
 	}
 
 	verifier, err := GenerateCodeVerifier()
@@ -50,9 +56,10 @@ func RunOAuthFlow(clientID string) (*FlowResult, error) {
 	defer shutdown()
 
 	cfg := &oauth2.Config{
-		ClientID:    clientID,
-		Endpoint:    oauth2.Endpoint{AuthURL: AuthURL, TokenURL: TokenURL},
-		RedirectURL: RedirectURL,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		Endpoint:     oauth2.Endpoint{AuthURL: AuthURL, TokenURL: TokenURL},
+		RedirectURL:  RedirectURL,
 	}
 
 	authURL := cfg.AuthCodeURL(state,
