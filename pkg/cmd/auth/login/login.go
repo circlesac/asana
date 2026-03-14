@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/timwehrle/asana/internal/oauth"
 	"github.com/timwehrle/asana/internal/prompter"
 
 	"github.com/timwehrle/asana/internal/api/asana"
@@ -28,6 +29,8 @@ type LoginOptions struct {
 
 	Workspace   string
 	Token       string
+	ClientID    string
+	Web         bool
 	Interactive bool
 }
 
@@ -45,23 +48,39 @@ func NewCmdLogin(f factory.Factory, runF func(*LoginOptions) error) *cobra.Comma
 		Use:   "login",
 		Short: "Log in to your Asana account",
 		Long: heredoc.Docf(`
-				Authenticate with Asana using a Personal Access Token (PAT).
-				
-				To get started:
+				Authenticate with Asana using a Personal Access Token (PAT) or OAuth.
+
+				To use PAT:
 				1. Visit https://app.asana.com/0/my-apps
 				2. Click "Create new token"
-				3. Give your token a description (e.g., "CLI Access")
-				4. Copy the generated token`),
+				3. Copy the generated token
+
+				To use OAuth (recommended):
+				$ asana auth login --web --client-id YOUR_CLIENT_ID
+				Or set ASANA_CLIENT_ID environment variable.`),
 		Example: heredoc.Doc(`
-					# Log in interactively and select a workspace
+					# Log in interactively with PAT
 					$ asana auth login
-					
+
+					# Log in with OAuth (opens browser)
+					$ asana auth login --web
+
+					# Log in with OAuth and specify client ID
+					$ asana auth login --web --client-id YOUR_CLIENT_ID
+
 					# Log in with a default workspace
 					$ asana auth login --workspace "Test Workspace"
-					
+
 					# Log in with a token and set a default workspace
 					$ asana auth login --workspace "Test Workspace" --with-token < mytoken.txt`),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if opts.Web {
+				if runF != nil {
+					return runF(opts)
+				}
+				return runOAuthLogin(opts)
+			}
+
 			if tokenStdin {
 				if opts.Workspace == "" {
 					return fmt.Errorf(
@@ -91,8 +110,94 @@ func NewCmdLogin(f factory.Factory, runF func(*LoginOptions) error) *cobra.Comma
 	cmd.Flags().
 		StringVarP(&opts.Workspace, "workspace", "w", "", "The default workspace to make calls to")
 	cmd.Flags().BoolVar(&tokenStdin, "with-token", false, "Read token from standard input")
+	cmd.Flags().BoolVar(&opts.Web, "web", false, "Log in with OAuth via browser (PKCE)")
+	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OAuth client ID (or set ASANA_CLIENT_ID)")
 
 	return cmd
+}
+
+func runOAuthLogin(opts *LoginOptions) error {
+	cs := opts.IO.ColorScheme()
+
+	result, err := oauth.RunOAuthFlow(opts.ClientID)
+	if err != nil {
+		return err
+	}
+
+	// Store access token
+	if err := auth.Set(result.AccessToken); err != nil {
+		return fmt.Errorf("failed to store access token: %w", err)
+	}
+
+	// Store refresh token if available
+	if result.RefreshToken != "" {
+		if err := auth.SetRefreshToken(result.RefreshToken); err != nil {
+			return fmt.Errorf("failed to store refresh token: %w", err)
+		}
+	}
+
+	client := asana.NewClientWithAccessToken(result.AccessToken)
+
+	user, err := client.CurrentUser()
+	if err != nil {
+		return err
+	}
+
+	workspaces, err := client.AllWorkspaces()
+	if err != nil {
+		return err
+	}
+
+	if len(workspaces) == 0 {
+		fmt.Fprintln(opts.IO.Out, "No workspaces found")
+		return nil
+	}
+
+	var selectedWorkspace *asana.Workspace
+	if opts.Workspace != "" {
+		for _, ws := range workspaces {
+			if ws.ID == opts.Workspace || strings.EqualFold(ws.Name, opts.Workspace) {
+				selectedWorkspace = ws
+				break
+			}
+		}
+	}
+
+	if selectedWorkspace == nil {
+		names := make([]string, len(workspaces))
+		for i, ws := range workspaces {
+			names[i] = ws.Name
+		}
+
+		index, err := opts.Prompter.Select("Select a default workspace:", names)
+		if err != nil {
+			return err
+		}
+		selectedWorkspace = workspaces[index]
+	}
+
+	configDir := filepath.Join(os.Getenv("HOME"), ".config", "asana-cli")
+	if err := os.MkdirAll(configDir, 0750); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	cfg := &config.Config{
+		Username:  user.Name,
+		UserID:    user.ID,
+		Workspace: selectedWorkspace,
+	}
+
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(opts.IO.Out, cs.SuccessIcon, "Logged in via OAuth")
+	if selectedWorkspace != nil {
+		fmt.Fprintf(opts.IO.Out, "%s Default workspace set to %s\n",
+			cs.SuccessIcon, cs.Bold(selectedWorkspace.Name))
+	}
+
+	return nil
 }
 
 func runLogin(opts *LoginOptions) error {

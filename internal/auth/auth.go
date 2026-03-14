@@ -9,8 +9,9 @@ import (
 )
 
 var (
-	service = "asana"
-	user    = "user"
+	service             = "asana"
+	user                = "user"
+	refreshTokenUser    = "refresh_token"
 )
 
 func Set(secret string) error {
@@ -82,6 +83,56 @@ func Delete() error {
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("timeout while trying to delete secret in keyring")
+	}
+}
+
+func SetRefreshToken(token string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- keyring.Set(service, refreshTokenUser, token)
+		close(errCh)
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return fmt.Errorf("failed to set refresh token: %w", err)
+		}
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("timeout while trying to set refresh token in keyring")
+	}
+}
+
+func GetRefreshToken() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	resultCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+
+	go func() {
+		defer close(resultCh)
+		defer close(errCh)
+		secret, err := keyring.Get(service, refreshTokenUser)
+		if err != nil {
+			errCh <- err
+		} else {
+			resultCh <- secret
+		}
+	}()
+
+	select {
+	case secret := <-resultCh:
+		return secret, nil
+	case err := <-errCh:
+		return "", fmt.Errorf("failed to get refresh token: %w", err)
+	case <-ctx.Done():
+		return "", fmt.Errorf("timeout while trying to get refresh token from keyring")
 	}
 }
 
